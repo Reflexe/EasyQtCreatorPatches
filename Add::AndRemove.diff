@@ -1,0 +1,111 @@
+diff --git a/src/plugins/cppeditor/cppeditordocument.cpp b/src/plugins/cppeditor/cppeditordocument.cpp
+index d31a4eb899..bb6f0c59c7 100644
+--- a/src/plugins/cppeditor/cppeditordocument.cpp
++++ b/src/plugins/cppeditor/cppeditordocument.cpp
+@@ -117,6 +117,9 @@ CppEditorDocument::CppEditorDocument()
+     connect(this, &IDocument::filePathChanged,
+             this, &CppEditorDocument::onFilePathChanged);
+ 
++    connect (this, &TextEditor::TextDocument::contentsChangedWithPosition,
++             this, &CppEditorDocument::onContentsChangedWithPosition);
++
+     connect(&m_parseContextModel, &ParseContextModel::preferredParseContextChanged,
+             this, &CppEditorDocument::reparseWithPreferredParseContext);
+ 
+@@ -386,6 +389,44 @@ CppEditorDocument::cursorInfo(const CppTools::CursorInfoParams &params)
+     return processor()->cursorInfo(params);
+ }
+ 
++void CppEditorDocument::onContentsChangedWithPosition(int position,
++                                                      int charsRemoved,
++                                                      int charsAdded)
++{
++    static const char doubleDelete[][2] = { {':', ':'},
++                                            {'-', '>'},
++                                            {'=', '='},
++                                            {'!', '='}
++                                          };
++
++    bool found = false;
++
++    if (charsRemoved == 1) {
++        document ()->undo ();
++        for(const char *chars : doubleDelete) {
++           if (position > 0 && characterAt (position) == chars[1]
++                            && characterAt (position-1) == chars[0]) {
++                QTextCursor cursor{document ()};
++                cursor.setPosition (position);
++                cursor.deletePreviousChar ();
++                cursor.deleteChar ();
++
++                found = true;
++                break;
++           }
++        }
++
++        if (!found)
++            document ()->redo ();
++    }
++}
++
++/*QFuture<CppTools::SymbolInfo>
++CppEditorDocument::requestFollowSymbol(int line, int column, bool resolveTarget)
++{
++    return processor()->requestFollowSymbol(line, column, resolveTarget);
++}*/
++
+ const MinimizableInfoBars &CppEditorDocument::minimizableInfoBars() const
+ {
+     return m_minimizableInfoBars;
+diff --git a/src/plugins/cppeditor/cppeditordocument.h b/src/plugins/cppeditor/cppeditordocument.h
+index e2e8a0a28e..b1f2275e83 100644
+--- a/src/plugins/cppeditor/cppeditordocument.h
++++ b/src/plugins/cppeditor/cppeditordocument.h
+@@ -68,6 +68,8 @@ public:
+ 
+     QFuture<CppTools::CursorInfo> cursorInfo(const CppTools::CursorInfoParams &params);
+ 
++    void onContentsChangedWithPosition(int position, int charsRemoved, int charsAdded);
++
+ signals:
+     void codeWarningsUpdated(unsigned contentsRevision,
+                              const QList<QTextEdit::ExtraSelection> selections,
+diff --git a/src/plugins/cpptools/cppcompletionassist.cpp b/src/plugins/cpptools/cppcompletionassist.cpp
+index 9b7cdc4512..0945e4bc86 100644
+--- a/src/plugins/cpptools/cppcompletionassist.cpp
++++ b/src/plugins/cpptools/cppcompletionassist.cpp
+@@ -225,7 +225,13 @@ void CppAssistProposalItem::applyContextualContent(TextDocumentManipulatorInterf
+         const bool autoInsertBrackets = completionSettings.m_autoInsertBrackets;
+ 
+         if (autoInsertBrackets && symbol && symbol->type()) {
+-            if (Function *function = symbol->type()->asFunctionType()) {
++            if (symbol->isTemplate ()) {
++                extraChars += QLatin1String("<>");
++                cursorOffset--;
++            } else if (symbol->isClass() || symbol->isNamespace()) {
++                // IDIDIT: insert ::
++                extraChars += QLatin1String("::");
++            } else if (Function *function = symbol->type()->asFunctionType()) {
+                 // If the member is a function, automatically place the opening parenthesis,
+                 // except when it might take template parameters.
+                 if (!function->hasReturnType()
+@@ -234,12 +240,14 @@ void CppAssistProposalItem::applyContextualContent(TextDocumentManipulatorInterf
+                     // Don't insert any magic, since the user might have just wanted to select the class
+ 
+                     /// ### port me
+-#if 0
+-                } else if (function->templateParameterCount() != 0 && typedChar != QLatin1Char('(')) {
++
++                } else if (function->isTemplate () && m_typedChar != QLatin1Char('(')) {
+                     // If there are no arguments, then we need the template specification
+-                    if (function->argumentCount() == 0)
+-                        extraChars += QLatin1Char('<');
+-#endif
++                    //if (function->argumentCount() == 0) {
++                    extraChars += QLatin1String("<>");
++                    cursorOffset--;
++
++
+                 } else if (!isDereferenced(manipulator, basePosition) && !function->isAmbiguous()) {
+                     // When the user typed the opening parenthesis, he'll likely also type the closing one,
+                     // in which case it would be annoying if we put the cursor after the already automatically
